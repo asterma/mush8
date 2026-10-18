@@ -54,6 +54,21 @@ Or make an `.ipa` to install with AltStore / SideStore (no signing needed on the
 ```
 it ends up in `build/Mush8.ipa`
 
+## iOS ultrawide display
+This branch includes opt-in ultrawide rendering for Mario Kart 8 Deluxe 4.0.1,
+tested on iPhone 16 Pro Max. Add `NX_ULTRAWIDE=1` to `env.txt` in the app's
+Documents folder (Files → On My iPhone → Mush8), then restart the app.
+Remove the setting or set it to `0` to use the original aspect ratio.
+
+Racing uses a wider camera projection. Menu artwork covers the screen while
+ordinary UI elements retain their proportions. The projection patch checks the
+4.0.1 module ID and instructions; menu detection uses shader and texture patterns
+observed in that version and has not been validated for other game versions.
+
+The menu checkered-background correction has been confirmed on the device.
+Transitions into and out of the idle demonstration can still show discontinuities
+at the sides; ultrawide transitions are not fully resolved.
+
 ## Multiplayer
 Pick a mode in the launcher, under Multiplayer :
 - LAN : players on the same network, a Switch can join too

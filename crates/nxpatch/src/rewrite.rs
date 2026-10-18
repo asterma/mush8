@@ -429,6 +429,16 @@ pub fn rewrite(nso: &nxfs::nso::Nso) -> Result<Output> {
         patches.push(Patch { kind: Kind::Svc, start: i as u64 * 4, end: i as u64 * 4 + 4, tramp, tramp_len: e.pc() - tramp });
     }
 
+    if cx.module_id == MK8DX_401 {
+        for site in [0x3cd258u64, 0x3cd314] {
+            let i = site as usize / 4;
+            ensure!(words.get(i..i + 2) == Some(&[0x1e201820, 0xbd00b120]), "ultrawide projection code differs at {site:#x}");
+            ensure!(patched[i] == words[i], "ultrawide overlaps another rewrite at {site:#x}");
+            patched[i] = asm::b(site, e.pc())?;
+            emit_aspect_scale(&mut e, keypage, site + 4)?;
+        }
+    }
+
     let tramp_end = e.pc();
     let mut image = vec![0u8; tramp_end as usize];
     image[..nso.image.len()].copy_from_slice(&nso.image);
@@ -449,6 +459,50 @@ pub fn rewrite(nso: &nxfs::nso::Nso) -> Result<Output> {
         tramp: (tramp_base, tramp_end),
         patches,
     })
+}
+
+fn emit_aspect_scale(e: &mut Emitter, keypage: u64, dest: u64) -> Result<()> {
+    e.emit(0x1e201820); // fdiv s0, s1, s0 (original)
+    e.emit(asm::stp_pre(16, 17, SP, -32));
+    e.emit(0x3d8007e2); // str q2, [sp, #16]
+    e.emit(asm::adrp(16, e.pc(), keypage)?);
+    e.emit(0xbd400202 | ((keypage::ASPECT_SCALE / 4) << 10)); // ldr s2, [x16, #ASPECT_SCALE]
+    e.emit(0x1e220800); // fmul s0, s0, s2
+    e.emit(0x3dc007e2); // ldr q2, [sp, #16]
+    e.emit(asm::ldp_post(16, 17, SP, 32));
+    e.emit(asm::b(e.pc(), dest)?);
+    Ok(())
+}
+
+#[test]
+fn aspect_trampoline_preserves_registers() {
+    use unicorn_engine::{Arch, Mode, Prot, RegisterARM64 as R, Unicorn};
+    for factor in [1.0f32, 1.3, 2.0] {
+        let mut e = Emitter { base: 0x1000, words: Vec::new(), fixups: Vec::new(), labels: Vec::new() };
+        emit_aspect_scale(&mut e, 0x4000, 0x2000).unwrap();
+        let code: Vec<u8> = e.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut uc = Unicorn::new(Arch::ARM64, Mode::LITTLE_ENDIAN).unwrap();
+        uc.mem_map(0x1000, 0x8000, Prot::ALL).unwrap();
+        uc.mem_write(0x1000, &code).unwrap();
+        uc.mem_write(0x4000 + keypage::ASPECT_SCALE as u64, &factor.to_le_bytes()).unwrap();
+        uc.reg_write(R::CPACR_EL1, 3 << 20).unwrap();
+        uc.reg_write(R::SP, 0x8000).unwrap();
+        uc.reg_write(R::X16, 0x12345678).unwrap();
+        uc.reg_write(R::X17, 0xabcdef12).unwrap();
+        uc.reg_write(R::NZCV, 0xa0000000).unwrap();
+        uc.reg_write(R::S0, 9.0f32.to_bits() as u64).unwrap();
+        uc.reg_write(R::S1, 16.0f32.to_bits() as u64).unwrap();
+        uc.reg_write_long(R::Q2, &[0x5a; 16]).unwrap();
+        uc.emu_start(0x1000, 0x2000, 0, 20).unwrap();
+        let result = f32::from_bits(uc.reg_read(R::S0).unwrap() as u32);
+        assert_eq!(result, (16.0f32 / 9.0) * factor);
+        assert_eq!(uc.reg_read(R::S1).unwrap(), 16.0f32.to_bits() as u64);
+        assert_eq!(&*uc.reg_read_long(R::Q2).unwrap(), &[0x5a; 16]);
+        assert_eq!(uc.reg_read(R::X16).unwrap(), 0x12345678);
+        assert_eq!(uc.reg_read(R::X17).unwrap(), 0xabcdef12);
+        assert_eq!(uc.reg_read(R::SP).unwrap(), 0x8000);
+        assert_eq!(uc.reg_read(R::NZCV).unwrap(), 0xa0000000);
+    }
 }
 
 fn emit_region(cx: &Ctx, e: &mut Emitter, need: &[Need], start: usize, end: usize, kind: Kind, keypage: u64) -> Result<Kind> {

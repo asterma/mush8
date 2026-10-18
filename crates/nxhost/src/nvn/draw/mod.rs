@@ -50,6 +50,9 @@ struct Engine {
     sampled: HashMap<textures::TexKey, Shared<gfx::Texture>>,
     touched: Vec<(textures::TexKey, Shared<gfx::Texture>)>,
     clears: Vec<PendingClear>,
+    // Background classification follows guest rendering, not host command buffers.
+    menu_art: bool,
+    main_menu_art: bool,
 }
 
 struct PendingClear {
@@ -123,6 +126,9 @@ impl Replay<'_> {
                         continue;
                     }
                     self.end_pass();
+                    if self.e.colors != *colors || self.e.depth != *depth {
+                        self.e.menu_art = false;
+                    }
                     self.e.colors = colors.clone();
                     self.e.depth = depth.clone();
                 }
@@ -632,6 +638,8 @@ pub fn present(texture: u64) {
         let t = {
             let mut e = ENGINE.lock().unwrap();
             e.forget_dead();
+            e.menu_art = false;
+            e.main_menu_art = false;
             e.textures.get(&b, true)
         };
         if let Some((_, t)) = t {
