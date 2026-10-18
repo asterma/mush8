@@ -511,6 +511,54 @@ pub fn set_present_interval(n: u32) {
     PRESENT_INTERVAL.store(n, std::sync::atomic::Ordering::Relaxed);
 }
 
+pub fn dump_png(tex: &Texture, path: &str) {
+    let (w, h) = (tex.width(), tex.height());
+    let g = gpu();
+    let d = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLPixelFormat::BGRA8Unorm, w, h, false) };
+    d.setStorageMode(MTLStorageMode::Shared);
+    d.setUsage(MTLTextureUsage::RenderTarget);
+    let Some(out) = g.device.0.newTextureWithDescriptor(&d) else { return };
+    let Some(cb) = g.queue.0.commandBuffer() else { return };
+    let desc = MTLRenderPassDescriptor::new();
+    let att = unsafe { desc.colorAttachments().objectAtIndexedSubscript(0) };
+    att.setTexture(Some(&out));
+    att.setLoadAction(MTLLoadAction::Clear);
+    att.setStoreAction(MTLStoreAction::Store);
+    let Some(enc) = cb.renderCommandEncoderWithDescriptor(&desc) else { return };
+    enc.setRenderPipelineState(&g.present.0);
+    let params = PresentParams { flip: 0, _pad: 0, offset: [0.0; 2], scale: [1.0; 2], lo: [0.0; 2], hi: [1.0; 2] };
+    unsafe {
+        let p = std::ptr::NonNull::from(&params).cast();
+        enc.setVertexBytes_length_atIndex(p, size_of::<PresentParams>(), 0);
+        enc.setFragmentBytes_length_atIndex(p, size_of::<PresentParams>(), 0);
+        enc.setFragmentTexture_atIndex(Some(tex), 0);
+        enc.setFragmentSamplerState_atIndex(Some(&g.sampler.0), 0);
+        enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
+    }
+    enc.endEncoding();
+    cb.commit();
+    cb.waitUntilCompleted();
+    let mut px = vec![0u8; w * h * 4];
+    unsafe {
+        out.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+            std::ptr::NonNull::new(px.as_mut_ptr()).unwrap().cast(),
+            w * 4,
+            MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w, height: h, depth: 1 } },
+            0,
+        )
+    };
+    for p in px.chunks_exact_mut(4) {
+        p.swap(0, 2);
+    }
+    let Ok(file) = std::fs::File::create(path) else { return };
+    let mut e = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+    e.set_color(png::ColorType::Rgba);
+    e.set_depth(png::BitDepth::Eight);
+    if let Ok(mut wr) = e.write_header() {
+        let _ = wr.write_image_data(&px);
+    }
+}
+
 pub fn open_url(url: &'static str) {
     dispatch2::DispatchQueue::main().exec_async(move || unsafe {
         use objc2::runtime::AnyObject;

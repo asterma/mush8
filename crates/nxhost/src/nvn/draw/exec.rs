@@ -134,6 +134,16 @@ impl Replay<'_> {
 
         let prim = self.primitives(d)?;
 
+        if super::TRACE_DRAWS.load(Relaxed) {
+            let attrs: Vec<String> = (0..16).filter(|&i| st.attribs[i] & 0x40 != 0).map(|i| format!("{i}:{}", (st.attribs[i] >> 21) & 0x3FF)).collect();
+            eprintln!("[frame]   attributes {attrs:?}");
+            let rt: Vec<String> = self.e.colors.iter().map(|c| c.as_ref().and_then(|b| super::textures::TexKey::of(b)).map_or("-".into(), |k| format!("{:#x}/{}/{}x{}", k.addr, k.format, k.width, k.height))).collect();
+            let tex: Vec<String> = bound.iter().map(|(f, b, t, _, _)| format!("{}{b}:{}x{}/{}", if *f { "f" } else { "v" }, t.0.width(), t.0.height(), t.0.pixelFormat().0)).collect();
+            eprintln!(
+                "[frame] draw rt {rt:?} vs {:016x} fs {:016x} poly {:#x} mode {} count {} inst {} vp {:?} sc {:?} ds {:#x} cs {:#x} mask {:#x} tex {tex:?}",
+                vs.hash, fs.hash, st.polygon, d.mode, d.count, d.instances, st.viewport, st.scissor, st.depth_stencil, st.color_state, st.channel_mask
+            );
+        }
         if st.polygon & 3 == 3 {
             return Ok(());
         }
@@ -225,7 +235,15 @@ impl Replay<'_> {
                 .collect()
         };
         for ((&b, &kind), (tb, key, sb)) in c.iface.textures.iter().zip(descriptors) {
+            let (tid, _) = ids(b);
             let got = tb.and_then(|tb| self.e.textures.get_keyed(key.flatten(), &tb, false).map(|(k, t)| (k, t, tb)));
+            if super::TRACE_DRAWS.load(Relaxed) {
+                if let Some((k, t, _)) = got.as_ref().filter(|(_, t, _)| t.0.textureType() == MTLTextureType::Type2D) {
+                    self.e.sampled.entry(*k).or_insert_with(|| t.clone());
+                }
+                let swz = tb.map(|b| [0x38usize, 0x3c, 0x40, 0x44].map(|o| u32::from_le_bytes(b[o..o + 4].try_into().unwrap())));
+                eprintln!("[frame]   tex {}{b}: id {tid} pool {:#x} -> {:?} swizzle {swz:?}", ["v", "f", "c"][stage], st.texture_pool, got.as_ref().map(|(k, _, _)| (k.addr, k.format, k.width, k.height)));
+            }
             let tex = got
                 .and_then(|(k, t, tb)| self.e.textures.view(k, &tb, &t, kind))
                 .filter(|t| !kind.is_depth() || gfx_is_depth(t.0.pixelFormat()))

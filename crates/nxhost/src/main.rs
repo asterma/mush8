@@ -120,6 +120,11 @@ fn main() {
     let docs = home.join("Documents");
     let _ = std::env::set_current_dir(&docs);
     let _ = std::fs::create_dir_all("work");
+    let _ = std::fs::rename("work/nxhost.log", "work/nxhost.prev.log");
+    if let Ok(log) = std::fs::File::create("work/nxhost.log") {
+        use std::os::fd::AsRawFd;
+        unsafe { libc::dup2(log.as_raw_fd(), 2) };
+    }
     let bundle = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)).unwrap_or_default();
     let mut env: Vec<(String, String)> = vec![
         ("NX_SHADER_CACHE".into(), bundle.join("shaders").display().to_string()),
