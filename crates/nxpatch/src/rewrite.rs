@@ -32,6 +32,8 @@ pub struct GamePatch {
 
 const MK8DX_401: &str = "158c0c7399aabd7bf83795c2ef3484c700000000";
 const MK8DX_401_KEYPAGE: u64 = 0x1368000;
+const MK8DX_401_ASPECT_SITES: [u64; 2] = [0x3cd258, 0x3cd314];
+const ASPECT_INSTRUCTIONS: [u32; 2] = [0x1e201820, 0xbd00b120]; // fdiv s0, s1, s0; str s0, [x9, #176]
 
 pub const GAME_PATCHES: &[GamePatch] = &[
     GamePatch { module_id: MK8DX_401, site: 0x4d8a04, from: &[0x9400_0038], to: &[0x9400_074E] },
@@ -430,9 +432,9 @@ pub fn rewrite(nso: &nxfs::nso::Nso) -> Result<Output> {
     }
 
     if cx.module_id == MK8DX_401 {
-        for site in [0x3cd258u64, 0x3cd314] {
+        for site in MK8DX_401_ASPECT_SITES {
             let i = site as usize / 4;
-            ensure!(words.get(i..i + 2) == Some(&[0x1e201820, 0xbd00b120]), "ultrawide projection code differs at {site:#x}");
+            ensure!(words.get(i..i + ASPECT_INSTRUCTIONS.len()) == Some(ASPECT_INSTRUCTIONS.as_slice()), "ultrawide projection code differs at {site:#x}");
             ensure!(patched[i] == words[i], "ultrawide overlaps another rewrite at {site:#x}");
             patched[i] = asm::b(site, e.pc())?;
             emit_aspect_scale(&mut e, keypage, site + 4)?;
@@ -462,7 +464,7 @@ pub fn rewrite(nso: &nxfs::nso::Nso) -> Result<Output> {
 }
 
 fn emit_aspect_scale(e: &mut Emitter, keypage: u64, dest: u64) -> Result<()> {
-    e.emit(0x1e201820); // fdiv s0, s1, s0 (original)
+    e.emit(ASPECT_INSTRUCTIONS[0]);
     e.emit(asm::stp_pre(16, 17, SP, -32));
     e.emit(0x3d8007e2); // str q2, [sp, #16]
     e.emit(asm::adrp(16, e.pc(), keypage)?);

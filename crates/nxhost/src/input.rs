@@ -2,13 +2,14 @@
 // Constantin Clerc (c22dev) - 0.1
 use crate::services::hid::PadState;
 use objc2_game_controller::*;
+use face_buttons::FaceButton;
 
 mod face_buttons;
 
-pub const A: u64 = 1 << 0;
-pub const B: u64 = 1 << 1;
-pub const X: u64 = 1 << 2;
-pub const Y: u64 = 1 << 3;
+pub const A: u64 = FaceButton::A as u64;
+pub const B: u64 = FaceButton::B as u64;
+pub const X: u64 = FaceButton::X as u64;
+pub const Y: u64 = FaceButton::Y as u64;
 pub const STICK_L: u64 = 1 << 4;
 pub const STICK_R: u64 = 1 << 5;
 pub const L: u64 = 1 << 6;
@@ -224,10 +225,8 @@ impl Pads {
             let phone = &mut self.phone;
             for (i, slot) in self.slots.iter().enumerate() {
                 let mut acc = Acc { buttons: scripted(i), ..Default::default() };
-                if let Some(c) = slot.as_ref() {
-                    if let Some(g) = c.extendedGamepad() {
-                        acc.gamepad(&g, c);
-                    }
+                if let Some(controller) = slot {
+                    acc.gamepad(controller);
                 }
                 let remote = self.phones[i].and_then(|a| phones.iter().find(|(p, _)| *p == a)).map(|(_, pad)| *pad);
                 if let Some(pad) = &remote {
@@ -315,27 +314,11 @@ struct Acc {
 }
 
 impl Acc {
-    unsafe fn gamepad(&mut self, g: &GCExtendedGamepad, controller: &GCController) {
+    unsafe fn gamepad(&mut self, controller: &GCController) {
         unsafe {
+            let Some(g) = controller.extendedGamepad() else { return };
             let pressed = |b: &GCControllerButtonInput| b.isPressed();
-            let faces = [g.buttonA(), g.buttonB(), g.buttonX(), g.buttonY()];
-            if faces.iter().any(|b| pressed(b)) {
-                let xbox = controller.vendorName().is_some_and(|n| n.to_string().to_ascii_lowercase().contains("xbox"));
-                let fallback = if xbox { [A, B, X, Y] } else { [B, A, Y, X] };
-                for (button, fallback) in faces.iter().zip(fallback) {
-                    if !pressed(button) { continue; }
-                    let symbol = button.sfSymbolsName().map(|s| s.to_string());
-                    let name = button.localizedName().map(|s| s.to_string());
-                    let bit = match face_buttons::label(symbol.as_deref(), name.as_deref()) {
-                        Some(face_buttons::FaceButton::A) => A,
-                        Some(face_buttons::FaceButton::B) => B,
-                        Some(face_buttons::FaceButton::X) => X,
-                        Some(face_buttons::FaceButton::Y) => Y,
-                        None => fallback,
-                    };
-                    self.buttons |= bit;
-                }
-            }
+            self.face_buttons(&g, controller);
             let map = [
                 (g.leftShoulder(), L),
                 (g.rightShoulder(), R),
@@ -364,6 +347,26 @@ impl Acc {
             self.ly += ls.yAxis().value();
             self.rx += rs.xAxis().value();
             self.ry += rs.yAxis().value();
+        }
+    }
+
+    unsafe fn face_buttons(&mut self, gamepad: &GCExtendedGamepad, controller: &GCController) {
+        unsafe {
+            let buttons = [gamepad.buttonA(), gamepad.buttonB(), gamepad.buttonX(), gamepad.buttonY()];
+            if !buttons.iter().any(|button| button.isPressed()) {
+                return;
+            }
+            let is_xbox = controller.vendorName().is_some_and(|name| name.to_string().to_ascii_lowercase().contains("xbox"));
+            let fallback = if is_xbox { [A, B, X, Y] } else { [B, A, Y, X] };
+            for (button, fallback) in buttons.iter().zip(fallback) {
+                if !button.isPressed() {
+                    continue;
+                }
+                let symbol = button.sfSymbolsName().map(|value| value.to_string());
+                let name = button.localizedName().map(|value| value.to_string());
+                let label = FaceButton::from_label(symbol.as_deref(), name.as_deref());
+                self.buttons |= label.map_or(fallback, |button| button as u64);
+            }
         }
     }
 

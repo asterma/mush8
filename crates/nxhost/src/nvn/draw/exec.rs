@@ -148,7 +148,6 @@ impl Replay<'_> {
             return Ok(());
         }
         let mut display_st = st;
-        let mut display_scissor = [sx, sy, sw, sh];
         // Preserve the known main-menu path, and recognize shared backdrop
         // masks by their sampled screen texture on other menu pages as well.
         // Depth state alone also matches ordinary mode-selection controls.
@@ -165,19 +164,18 @@ impl Replay<'_> {
             bound.iter().any(|(fragment, binding, tex, _, _)| *fragment && *binding == 0 &&
                 gfx::widescreen::is_frame_copy(vs.hash, fs.hash, st.depth_stencil as u32, st.color_state,
                     (tex.0.width() as u32, tex.0.height() as u32, tex.0.pixelFormat().0 as u64)));
-        if scale > 1.0 && ui && self.e.menu_art && !menu_backdrop && !intro_composite && !frame_copy {
-            let [x, y, vw, vh] = st.viewport.unwrap_or([0.0, 0.0, w as f32, h as f32]);
-            display_st.viewport = Some([x, gfx::widescreen::cover_y(y, h as f32, scale), vw, vh * scale]);
-            let y0 = gfx::widescreen::cover_y(sy as f32, h as f32, scale).floor().clamp(0.0, h as f32) as u32;
-            let y1 = gfx::widescreen::cover_y((sy + sh) as f32, h as f32, scale).ceil().clamp(0.0, h as f32) as u32;
-            display_scissor = [sx, y0, sw, y1.saturating_sub(y0)];
-        } else if scale > 1.0 && ui && !main_menu_blur && !menu_backdrop && !menu_fade && !intro_composite && !frame_copy {
-            let [x, y, vw, vh] = st.viewport.unwrap_or([0.0, 0.0, w as f32, h as f32]);
-            display_st.viewport = Some([gfx::widescreen::center_x(x, w as f32, scale), y, vw / scale, vh]);
-            let x0 = gfx::widescreen::center_x(sx as f32, w as f32, scale).floor().max(0.0) as u32;
-            let x1 = gfx::widescreen::center_x((sx + sw) as f32, w as f32, scale).ceil().min(w as f32) as u32;
-            display_scissor = [x0, sy, x1.saturating_sub(x0), sh];
-        }
+        let layout = if scale <= 1.0 || !ui || menu_backdrop || intro_composite || frame_copy {
+            gfx::widescreen::Layout::Original
+        } else if self.e.menu_art {
+            gfx::widescreen::Layout::CoverArtwork
+        } else if main_menu_blur || menu_fade {
+            gfx::widescreen::Layout::Original
+        } else {
+            gfx::widescreen::Layout::CenterUi
+        };
+        let transform = gfx::widescreen::DisplayTransform { size: (w, h), scale };
+        let (viewport, display_scissor) = transform.apply(layout, st.viewport, [sx, sy, sw, sh]);
+        display_st.viewport = viewport;
         let prev = self.pass.as_ref().unwrap().fixed;
         let next = {
             let enc = &self.pass.as_ref().unwrap().enc;

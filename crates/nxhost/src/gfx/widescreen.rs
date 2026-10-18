@@ -1,4 +1,19 @@
-use std::sync::{OnceLock, atomic::{AtomicU32, Ordering::Relaxed}};
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicU32, Ordering::Relaxed},
+};
+
+#[cfg(target_os = "ios")]
+const ORIGINAL_ASPECT: f64 = 16.0 / 9.0;
+const TEXTURED_UI_VERTEX: u64 = 0x77264c28fdc0921b;
+const PATTERN_UI_VERTEX: u64 = 0x8a167a1501240ee5;
+const INTRO_ART_VERTEX: u64 = 0xff58c483a97cf8ef;
+const INTRO_ART_FRAGMENT: u64 = 0xcc03897b25330f90;
+const INTRO_COMPOSITE_VERTEX: u64 = 0x305d4f5c810d7403;
+const INTRO_COMPOSITE_FRAGMENT: u64 = 0x16182a4ea0da75ec;
+const TEXTURED_UI_FRAGMENT: u64 = 0x5bb31027ff12d02e;
+const RGBA16_FLOAT: u64 = 90;
+const OPAQUE_COLOR_STATE: u32 = 0x08030000;
 
 static DISPLAY_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static SCALE: OnceLock<f32> = OnceLock::new();
@@ -6,15 +21,13 @@ static SCALE: OnceLock<f32> = OnceLock::new();
 #[cfg(target_os = "ios")]
 pub fn set_display(w: f64, h: f64) {
     if w > 0.0 && h > 0.0 && w.is_finite() && h.is_finite() {
-        DISPLAY_SCALE.store(((w.max(h) / w.min(h) / (16.0 / 9.0)) as f32).clamp(1.0, 2.0).to_bits(), Relaxed);
+        DISPLAY_SCALE.store(((w.max(h) / w.min(h) / ORIGINAL_ASPECT) as f32).clamp(1.0, 2.0).to_bits(), Relaxed);
     }
 }
 
 pub fn scale() -> f32 {
     *SCALE.get_or_init(|| {
-        let scale = if std::env::var("NX_ULTRAWIDE").as_deref() == Ok("1") {
-            f32::from_bits(DISPLAY_SCALE.load(Relaxed))
-        } else { 1.0 };
+        let scale = if std::env::var("NX_ULTRAWIDE").as_deref() == Ok("1") { f32::from_bits(DISPLAY_SCALE.load(Relaxed)) } else { 1.0 };
         eprintln!("[gfx] ultrawide aspect scale {scale:.6}");
         scale
     })
@@ -22,10 +35,13 @@ pub fn scale() -> f32 {
 
 // These are MK8DX 4.0.1's observed UI vertex programs, not scene or resolve programs.
 pub fn is_ui(hash: u64, w: u32, h: u32) -> bool {
-    w >= 640 && h >= 360 && w * 9 == h * 16 && matches!(hash,
-        0x77264c28fdc0921b | 0x8a167a1501240ee5 | 0xff58c483a97cf8ef |
-        0xddb6b360577ab6ff | 0x52454081518e814e | 0x305d4f5c810d7403 |
-        0x684ee55e995f1d67 | 0x861a8981f7511caa)
+    w >= 640
+        && h >= 360
+        && w * 9 == h * 16
+        && matches!(
+            hash,
+            TEXTURED_UI_VERTEX | PATTERN_UI_VERTEX | INTRO_ART_VERTEX | 0xddb6b360577ab6ff | 0x52454081518e814e | INTRO_COMPOSITE_VERTEX | 0x684ee55e995f1d67 | 0x861a8981f7511caa
+        )
 }
 
 pub fn center_x(x: f32, width: f32, scale: f32) -> f32 {
@@ -38,9 +54,8 @@ pub fn cover_y(y: f32, height: f32, scale: f32) -> f32 {
 
 pub fn starts_menu_art(hash: u64, depth_stencil: u32, texture: Option<(u32, u32, bool)>) -> bool {
     match texture {
-        Some((8, 1048, _)) => matches!(hash, 0x77264c28fdc0921b | 0x8a167a1501240ee5) &&
-            matches!(menu_depth_state(depth_stencil), 0x40 | 0x48),
-        Some(texture) if is_menu_illustration(texture) => hash == 0x77264c28fdc0921b && menu_depth_state(depth_stencil) == 0x40,
+        Some((8, 1048, _)) => matches!(hash, TEXTURED_UI_VERTEX | PATTERN_UI_VERTEX) && matches!(menu_depth_state(depth_stencil), 0x40 | 0x48),
+        Some(texture) if is_menu_illustration(texture) => hash == TEXTURED_UI_VERTEX && menu_depth_state(depth_stencil) == 0x40,
         _ => false,
     }
 }
@@ -52,35 +67,35 @@ pub fn is_menu_illustration(texture: (u32, u32, bool)) -> bool {
 }
 
 pub fn is_menu_fade(hash: u64, depth_stencil: u32, texture: Option<(u32, u32, bool)>) -> bool {
-    matches!(hash, 0x77264c28fdc0921b | 0x8a167a1501240ee5) &&
-        menu_depth_state(depth_stencil) == 0x40 && texture == Some((8, 8, true))
+    matches!(hash, TEXTURED_UI_VERTEX | PATTERN_UI_VERTEX) && menu_depth_state(depth_stencil) == 0x40 && texture == Some((8, 8, true))
 }
 
 pub fn starts_intro_art(vs: u64, fs: u64, depth_stencil: u32, texture: Option<(u32, u32, bool)>) -> bool {
     // The opening animation composites its artwork with a separate mask program.
-    vs == 0xff58c483a97cf8ef && fs == 0xcc03897b25330f90 &&
-        matches!(menu_depth_state(depth_stencil), 0x40 | 0x48) &&
-        matches!(texture, Some((1280, 720 | 420, false)))
+    vs == INTRO_ART_VERTEX && fs == INTRO_ART_FRAGMENT && matches!(menu_depth_state(depth_stencil), 0x40 | 0x48) && matches!(texture, Some((1280, 720 | 420, false)))
 }
 
 pub fn is_intro_composite(vs: u64, fs: u64) -> bool {
     // This pass samples the already covered title framebuffer, not original art.
-    vs == 0x305d4f5c810d7403 && fs == 0x16182a4ea0da75ec
+    vs == INTRO_COMPOSITE_VERTEX && fs == INTRO_COMPOSITE_FRAGMENT
 }
 
 pub fn is_menu_backdrop(depth: u32, mask: (u32, u32), background: (u32, u32, u64)) -> bool {
     // Menu masks sample the downscaled screen, which already contains the
     // widescreen background. Applying the UI correction again creates seams.
-    matches!(menu_depth_state(depth), 0x40 | 0x48) &&
-        matches!(mask, (80, 45 | 39) | (4, 45) | (8, 8) | (16, 16)) &&
-        background == (320, 180, 90)
+    matches!(menu_depth_state(depth), 0x40 | 0x48) && matches!(mask, (80, 45 | 39) | (4, 45) | (8, 8) | (16, 16)) && background == (320, 180, RGBA16_FLOAT)
 }
 
 pub fn is_frame_copy(vs: u64, fs: u64, depth: u32, color: u32, texture: (u32, u32, u64)) -> bool {
     let (w, h, format) = texture;
-    vs == 0x77264c28fdc0921b && fs == 0x5bb31027ff12d02e &&
-        menu_depth_state(depth) == 0x40 && color == 0x08030000 &&
-        format == 90 && w >= 640 && h >= 360 && w * 9 == h * 16
+    vs == TEXTURED_UI_VERTEX
+        && fs == TEXTURED_UI_FRAGMENT
+        && menu_depth_state(depth) == 0x40
+        && color == OPAQUE_COLOR_STATE
+        && format == RGBA16_FLOAT
+        && w >= 640
+        && h >= 360
+        && w * 9 == h * 16
 }
 
 pub fn menu_depth_state(depth_stencil: u32) -> u32 {
@@ -89,9 +104,77 @@ pub fn menu_depth_state(depth_stencil: u32) -> u32 {
     depth_stencil & 0xff
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    Original,
+    CoverArtwork,
+    CenterUi,
+}
+
+pub struct DisplayTransform {
+    pub size: (u32, u32),
+    pub scale: f32,
+}
+
+impl DisplayTransform {
+    pub fn apply(&self, layout: Layout, viewport: Option<[f32; 4]>, scissor: [u32; 4]) -> (Option<[f32; 4]>, [u32; 4]) {
+        if layout == Layout::Original {
+            return (viewport, scissor);
+        }
+        let (width, height) = self.size;
+        let mut viewport = viewport.unwrap_or([0.0, 0.0, width as f32, height as f32]);
+        let mut scissor = scissor;
+        let (axis, extent) = match layout {
+            Layout::CoverArtwork => (1, height as f32),
+            Layout::CenterUi => (0, width as f32),
+            Layout::Original => unreachable!(),
+        };
+        let transform = |position| match layout {
+            Layout::CoverArtwork => cover_y(position, extent, self.scale),
+            _ => center_x(position, extent, self.scale),
+        };
+        viewport[axis] = transform(viewport[axis]);
+        viewport[axis + 2] = match layout {
+            Layout::CenterUi => viewport[axis + 2] / self.scale,
+            _ => viewport[axis + 2] * self.scale,
+        };
+        let start = transform(scissor[axis] as f32).floor().clamp(0.0, extent) as u32;
+        let end = transform((scissor[axis] + scissor[axis + 2]) as f32).ceil().clamp(0.0, extent) as u32;
+        scissor[axis] = start;
+        scissor[axis + 2] = end.saturating_sub(start);
+        (Some(viewport), scissor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_screen_artwork_covers_and_ui_stays_centered() {
+        let transform = DisplayTransform { size: (1920, 1080), scale: 1.25 };
+        let scissor = [0, 0, 1920, 1080];
+        assert_eq!(transform.apply(Layout::CoverArtwork, None, scissor), (Some([0.0, -135.0, 1920.0, 1350.0]), scissor));
+        assert_eq!(transform.apply(Layout::CenterUi, None, scissor), (Some([192.0, 0.0, 1536.0, 1080.0]), [192, 0, 1536, 1080]));
+    }
+
+    #[test]
+    fn partial_viewports_and_scissors_transform_about_target_center() {
+        let transform = DisplayTransform { size: (1920, 1080), scale: 1.25 };
+        let viewport = Some([100.0, 50.0, 1720.0, 980.0]);
+        let scissor = [240, 120, 1440, 840];
+        assert_eq!(transform.apply(Layout::CoverArtwork, viewport, scissor), (Some([100.0, -72.5, 1720.0, 1225.0]), [240, 15, 1440, 1050]));
+        assert_eq!(transform.apply(Layout::CenterUi, viewport, scissor), (Some([272.0, 50.0, 1376.0, 980.0]), [384, 120, 1152, 840]));
+    }
+
+    #[test]
+    fn original_layout_preserves_implicit_and_explicit_viewports() {
+        let transform = DisplayTransform { size: (1920, 1080), scale: 1.25 };
+        let scissor = [240, 120, 1440, 840];
+        for viewport in [None, Some([100.0, 50.0, 1720.0, 980.0])] {
+            assert_eq!(transform.apply(Layout::Original, viewport, scissor), (viewport, scissor));
+        }
+    }
 
     #[test]
     fn half_resolution_menu_art_keeps_the_same_overlay_space() {
