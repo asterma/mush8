@@ -55,19 +55,9 @@ Or make an `.ipa` to install with AltStore / SideStore (no signing needed on the
 it ends up in `build/Mush8.ipa`
 
 ## iOS ultrawide display
-This branch includes opt-in ultrawide rendering for Mario Kart 8 Deluxe 4.0.1,
-tested on iPhone 16 Pro Max. Add `NX_ULTRAWIDE=1` to `env.txt` in the app's
-Documents folder (Files → On My iPhone → Mush8), then restart the app.
-Remove the setting or set it to `0` to use the original aspect ratio.
-
-Racing uses a wider camera projection. Menu artwork covers the screen while
-ordinary UI elements retain their proportions. The projection patch checks the
-4.0.1 module ID and instructions; menu detection uses shader and texture patterns
-observed in that version and has not been validated for other game versions.
-
-The menu checkered-background correction has been confirmed on the device.
-Transitions into and out of the idle demonstration can still show discontinuities
-at the sides; ultrawide transitions are not fully resolved.
+Enable **Ultrawide** in the iOS launcher before pressing **Play** to use a wider
+racing view in Mario Kart 8 Deluxe 4.0.1. Turn it off to use the original aspect
+ratio. To change modes after starting a game, fully close and reopen the app.
 
 ## Multiplayer
 Pick a mode in the launcher, under Multiplayer :
@@ -79,12 +69,6 @@ In the game, the main menu then shows LAN Play, Online Play or Wireless Play
 
 ## Controls
 Any controller works (Switch Pro, Joy-Con, DualSense, Xbox...), each one is a player. On macOS the keyboard works too (WASD stick, arrows d-pad, X/Return A, Z/Backspace B, Q/E L/R, 1/3 ZL/ZR, Tab +), on iOS there are touch controls when no controller is connected
-
-Face buttons use the A/B/X/Y labels reported by GameController, including its
-system-remapped symbols, instead of swapping every controller's face buttons.
-If no letter is available, Xbox controllers fall back to Xbox lettering and
-other controllers retain the previous positional mapping. Label parsing tests
-pass; physical Xbox and Switch Pro verification is still pending.
 
 The touchscreen works too : tap the game on iOS, click it on macOS
 

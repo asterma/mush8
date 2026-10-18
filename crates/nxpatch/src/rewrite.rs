@@ -469,6 +469,9 @@ fn emit_aspect_scale(e: &mut Emitter, keypage: u64, dest: u64) -> Result<()> {
     e.emit(0x3d8007e2); // str q2, [sp, #16]
     e.emit(asm::adrp(16, e.pc(), keypage)?);
     e.emit(0xbd400202 | ((keypage::ASPECT_SCALE / 4) << 10)); // ldr s2, [x16, #ASPECT_SCALE]
+    e.emit(0x1e260051); // fmov w17, s2
+    e.emit(0x531f7a31); // lsl w17, w17, #1 (both signed zeros become zero)
+    e.emit(0x34000051); // cbz w17, +8 (zero scale leaves the original aspect unchanged)
     e.emit(0x1e220800); // fmul s0, s0, s2
     e.emit(0x3dc007e2); // ldr q2, [sp, #16]
     e.emit(asm::ldp_post(16, 17, SP, 32));
@@ -479,7 +482,7 @@ fn emit_aspect_scale(e: &mut Emitter, keypage: u64, dest: u64) -> Result<()> {
 #[test]
 fn aspect_trampoline_preserves_registers() {
     use unicorn_engine::{Arch, Mode, Prot, RegisterARM64 as R, Unicorn};
-    for factor in [1.0f32, 1.3, 2.0] {
+    for factor in [0.0f32, -0.0, 1.0, 1.3, 2.0] {
         let mut e = Emitter { base: 0x1000, words: Vec::new(), fixups: Vec::new(), labels: Vec::new() };
         emit_aspect_scale(&mut e, 0x4000, 0x2000).unwrap();
         let code: Vec<u8> = e.words.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -497,7 +500,8 @@ fn aspect_trampoline_preserves_registers() {
         uc.reg_write_long(R::Q2, &[0x5a; 16]).unwrap();
         uc.emu_start(0x1000, 0x2000, 0, 20).unwrap();
         let result = f32::from_bits(uc.reg_read(R::S0).unwrap() as u32);
-        assert_eq!(result, (16.0f32 / 9.0) * factor);
+        let expected_factor = if factor == 0.0 { 1.0 } else { factor };
+        assert_eq!(result, (16.0f32 / 9.0) * expected_factor);
         assert_eq!(uc.reg_read(R::S1).unwrap(), 16.0f32.to_bits() as u64);
         assert_eq!(&*uc.reg_read_long(R::Q2).unwrap(), &[0x5a; 16]);
         assert_eq!(uc.reg_read(R::X16).unwrap(), 0x12345678);

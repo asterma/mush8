@@ -1,8 +1,0 @@
-/target/
-/work/
-/build/
-/ios/Mush8.xcodeproj/
-*.nsp
-*.xci
-*.keys
-.DS_Store

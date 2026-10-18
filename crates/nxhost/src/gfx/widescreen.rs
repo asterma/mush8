@@ -1,6 +1,6 @@
 use std::sync::{
-    OnceLock,
     atomic::{AtomicU32, Ordering::Relaxed},
+    OnceLock,
 };
 
 #[cfg(target_os = "ios")]
@@ -104,6 +104,50 @@ pub fn menu_depth_state(depth_stencil: u32) -> u32 {
     depth_stencil & 0xff
 }
 
+// A composited screen is already in display space. Its blend mode and pixel
+// format do not change that space (fades and downsampled masks included).
+pub fn is_screen_composite(size: (u32, u32), viewport: Option<[f32; 4]>, depth: u32, vertices: u32, instances: u32, rendered_source: impl FnOnce() -> bool) -> bool {
+    let (w, h) = size;
+    matches!(menu_depth_state(depth), 0x40 | 0x48)
+        && matches!(vertices, 3 | 4 | 6)
+        && instances == 1
+        && viewport.is_none_or(|v| v == [0.0, 0.0, w as f32, h as f32])
+        && rendered_source()
+}
+
+pub fn is_screen_size(width: u32, height: u32) -> bool {
+    width >= 320 && height >= 180 && u64::from(width) * 9 == u64::from(height) * 16
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ArtworkState {
+    pub covering: bool,
+    pub main_menu: bool,
+}
+
+impl ArtworkState {
+    pub fn layout(self, screen_space: bool, fade: bool, depth: u32) -> Layout {
+        if screen_space {
+            Layout::Original
+        } else if self.covering {
+            Layout::CoverArtwork
+        } else if fade || (self.main_menu && menu_depth_state(depth) == 0x48) {
+            Layout::Original
+        } else {
+            Layout::CenterUi
+        }
+    }
+
+    pub fn observe(&mut self, ui: bool, vs: u64, fs: u64, depth: u32, texture: Option<(u32, u32, bool)>) {
+        if !ui || !matches!(menu_depth_state(depth), 0x40 | 0x48) {
+            *self = Self::default();
+            return;
+        }
+        self.covering |= starts_menu_art(vs, depth, texture) || starts_intro_art(vs, fs, depth, texture);
+        self.main_menu |= self.covering && texture.is_some_and(is_menu_illustration);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
     Original,
@@ -149,6 +193,65 @@ impl DisplayTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendered_screens_keep_their_space_through_compositing() {
+        for size in [(1280, 720), (1920, 1080)] {
+            for depth in [0x40, 0x48, 0x3f800040, 0x500fef48] {
+                for count in [3, 4, 6] {
+                    for viewport in [None, Some([0.0, 0.0, size.0 as f32, size.1 as f32])] {
+                        assert!(is_screen_composite(size, viewport, depth, count, 1, || true));
+                        assert!(!is_screen_composite(size, viewport, depth, count, 1, || false));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_viewports_and_scene_geometry_are_not_screen_composites() {
+        let size = (1920, 1080);
+        assert!(!is_screen_composite(size, Some([100.0, 100.0, 640.0, 360.0]), 0x40, 6, 1, || panic!("non-composite draw must not query texture sources")));
+        for depth in [0x41, 0x43, 0x44] {
+            assert!(!is_screen_composite(size, None, depth, 6, 1, || panic!("non-composite draw must not query texture sources")));
+        }
+        assert!(!is_screen_composite(size, None, 0x40, 6, 2, || panic!("non-composite draw must not query texture sources")));
+        assert!(!is_screen_composite(size, None, 0x40, 300, 1, || panic!("non-composite draw must not query texture sources")));
+    }
+
+    #[test]
+    fn screen_sources_include_downsampled_buffers_but_not_icons() {
+        for size in [(320, 180), (640, 360), (1280, 720), (1920, 1080)] {
+            assert!(is_screen_size(size.0, size.1));
+        }
+        for size in [(0, 0), (16, 16), (170, 105), (400, 400), (1280, 420)] {
+            assert!(!is_screen_size(size.0, size.1));
+        }
+    }
+
+    #[test]
+    fn artwork_sequences_are_independent_and_scene_draws_end_them() {
+        let mut background = ArtworkState::default();
+        background.observe(true, TEXTURED_UI_VERTEX, TEXTURED_UI_FRAGMENT, 0x40, Some((1920, 1080, true)));
+        let mut overlay = ArtworkState::default();
+        overlay.observe(true, TEXTURED_UI_VERTEX, TEXTURED_UI_FRAGMENT, 0x48, Some((16, 16, true)));
+        assert!(background.covering && background.main_menu);
+        assert!(!overlay.covering && !overlay.main_menu);
+        background.observe(false, 0, 0, 0x43, None);
+        assert!(!background.covering && !background.main_menu);
+    }
+
+    #[test]
+    fn composited_screens_take_priority_over_artwork_and_fades() {
+        let artwork = ArtworkState { covering: true, main_menu: true };
+        assert_eq!(artwork.layout(true, true, 0x48), Layout::Original);
+        assert_eq!(artwork.layout(false, true, 0x48), Layout::CoverArtwork);
+        let overlay = ArtworkState { covering: false, main_menu: true };
+        assert_eq!(overlay.layout(false, false, 0x500fef48), Layout::Original);
+        assert_eq!(overlay.layout(false, false, 0x40), Layout::CenterUi);
+        assert_eq!(ArtworkState::default().layout(false, true, 0x40), Layout::Original);
+        assert_eq!(ArtworkState::default().layout(false, false, 0x40), Layout::CenterUi);
+    }
 
     #[test]
     fn full_screen_artwork_covers_and_ui_stays_centered() {
