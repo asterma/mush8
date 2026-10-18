@@ -80,6 +80,12 @@ In the game, the main menu then shows LAN Play, Online Play or Wireless Play
 ## Controls
 Any controller works (Switch Pro, Joy-Con, DualSense, Xbox...), each one is a player. On macOS the keyboard works too (WASD stick, arrows d-pad, X/Return A, Z/Backspace B, Q/E L/R, 1/3 ZL/ZR, Tab +), on iOS there are touch controls when no controller is connected
 
+Face buttons use the A/B/X/Y labels reported by GameController, including its
+system-remapped symbols, instead of swapping every controller's face buttons.
+If no letter is available, Xbox controllers fall back to Xbox lettering and
+other controllers retain the previous positional mapping. Label parsing tests
+pass; physical Xbox and Switch Pro verification is still pending.
+
 The touchscreen works too : tap the game on iOS, click it on macOS
 
 Motion controls (gyro steering) are off by default, turn them on in the launcher

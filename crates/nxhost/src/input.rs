@@ -3,6 +3,8 @@
 use crate::services::hid::PadState;
 use objc2_game_controller::*;
 
+mod face_buttons;
+
 pub const A: u64 = 1 << 0;
 pub const B: u64 = 1 << 1;
 pub const X: u64 = 1 << 2;
@@ -222,8 +224,10 @@ impl Pads {
             let phone = &mut self.phone;
             for (i, slot) in self.slots.iter().enumerate() {
                 let mut acc = Acc { buttons: scripted(i), ..Default::default() };
-                if let Some(g) = slot.as_ref().and_then(|c| c.extendedGamepad()) {
-                    acc.gamepad(&g);
+                if let Some(c) = slot.as_ref() {
+                    if let Some(g) = c.extendedGamepad() {
+                        acc.gamepad(&g, c);
+                    }
                 }
                 let remote = self.phones[i].and_then(|a| phones.iter().find(|(p, _)| *p == a)).map(|(_, pad)| *pad);
                 if let Some(pad) = &remote {
@@ -311,14 +315,28 @@ struct Acc {
 }
 
 impl Acc {
-    unsafe fn gamepad(&mut self, g: &GCExtendedGamepad) {
+    unsafe fn gamepad(&mut self, g: &GCExtendedGamepad, controller: &GCController) {
         unsafe {
             let pressed = |b: &GCControllerButtonInput| b.isPressed();
+            let faces = [g.buttonA(), g.buttonB(), g.buttonX(), g.buttonY()];
+            if faces.iter().any(|b| pressed(b)) {
+                let xbox = controller.vendorName().is_some_and(|n| n.to_string().to_ascii_lowercase().contains("xbox"));
+                let fallback = if xbox { [A, B, X, Y] } else { [B, A, Y, X] };
+                for (button, fallback) in faces.iter().zip(fallback) {
+                    if !pressed(button) { continue; }
+                    let symbol = button.sfSymbolsName().map(|s| s.to_string());
+                    let name = button.localizedName().map(|s| s.to_string());
+                    let bit = match face_buttons::label(symbol.as_deref(), name.as_deref()) {
+                        Some(face_buttons::FaceButton::A) => A,
+                        Some(face_buttons::FaceButton::B) => B,
+                        Some(face_buttons::FaceButton::X) => X,
+                        Some(face_buttons::FaceButton::Y) => Y,
+                        None => fallback,
+                    };
+                    self.buttons |= bit;
+                }
+            }
             let map = [
-                (g.buttonB(), A),
-                (g.buttonA(), B),
-                (g.buttonY(), X),
-                (g.buttonX(), Y),
                 (g.leftShoulder(), L),
                 (g.rightShoulder(), R),
                 (g.leftTrigger(), ZL),
