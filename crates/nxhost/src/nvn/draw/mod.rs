@@ -17,8 +17,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{LazyLock, Mutex};
 
-pub(crate) static TRACE_DRAWS: AtomicBool = AtomicBool::new(false);
-static DUMP_NEXT: AtomicBool = AtomicBool::new(false);
 static UPPER_LEFT: AtomicBool = AtomicBool::new(false);
 static ZERO_TO_ONE: AtomicBool = AtomicBool::new(false);
 
@@ -47,8 +45,6 @@ struct Engine {
     bank_tex: [[u64; 32]; 3],
     bank_gpu: [u64; 3],
     bank_ok: [bool; 3],
-    sampled: HashMap<textures::TexKey, Shared<gfx::Texture>>,
-    touched: Vec<(textures::TexKey, Shared<gfx::Texture>)>,
     clears: Vec<PendingClear>,
     // Background classification follows guest rendering, not host command buffers.
     menu_art: bool,
@@ -142,9 +138,6 @@ impl Replay<'_> {
                         continue;
                     }
                     let Some((key, t)) = self.e.textures.get(&b, true) else { continue };
-                    if TRACE_DRAWS.load(Relaxed) {
-                        eprintln!("[frame] clear color rt{index} {key:?} = {rgba:?}");
-                    }
                     let c = rgba.map(|x| x as f64);
                     let sub = super::objects::view_subresource(&b);
                     self.defer_clear(PendingClear { key, sub, tex: t, load: Load::ClearColor(c), stencil: false });
@@ -409,9 +402,6 @@ impl Replay<'_> {
                 });
                 fmts.push(t.as_ref().map(|(_, t)| t.0.pixelFormat()));
                 colors.push(t.map(|(k, t)| {
-                    if !self.e.touched.iter().any(|(tk, _)| *tk == k) {
-                        self.e.touched.push((k, t.clone()));
-                    }
                     size.get_or_insert(((k.width >> sub.1).max(1), (k.height >> sub.1).max(1)));
                     let load = self.take_clear(k, sub, false).map_or(Load::Keep, |c| c.load);
                     (t, load)
@@ -478,27 +468,6 @@ fn set_faces(v: &mut [u32; 2], faces: u32, value: u32) {
     }
 }
 
-struct Debug {
-    trace_frame: Option<u32>,
-    trace_at: Option<f32>,
-    trace_count: u32,
-    dump_rt_at: Option<f32>,
-    dump_frames: Vec<u32>,
-    capture_file: bool,
-}
-
-static DEBUG: LazyLock<Debug> = LazyLock::new(|| {
-    let var = |k: &str| std::env::var(k).ok();
-    Debug {
-        trace_frame: var("NX_TRACE_FRAME").and_then(|v| v.parse().ok()),
-        trace_at: var("NX_TRACE_AT").and_then(|v| v.parse().ok()),
-        trace_count: var("NX_TRACE_COUNT").and_then(|v| v.parse().ok()).unwrap_or(1),
-        dump_rt_at: var("NX_DUMP_RT_AT").and_then(|v| v.parse().ok()),
-        dump_frames: var("NX_DUMP_FRAME").map(|v| v.split(',').filter_map(|f| f.parse().ok()).collect()).unwrap_or_default(),
-        capture_file: var("NX_NO_CAPTURE_FILE").is_none(),
-    }
-});
-
 pub fn submit(handles: &[u64]) {
     gfx::wait_foreground();
     objc2::rc::autoreleasepool(|_| {
@@ -521,25 +490,6 @@ pub fn submit(handles: &[u64]) {
             let a = r.e.arena.alloc_bytes(src);
             r.e.overlays.insert(addr, (size as u64, a.gpu, a.ptr as usize));
         }
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = N.fetch_add(1, Relaxed);
-        static T0: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
-        static TRACED_AT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let dbg = &*DEBUG;
-        let at = dbg.trace_at.is_some_and(|t| T0.elapsed().as_secs_f32() >= t) && TRACED_AT.fetch_add(1, Relaxed) < dbg.trace_count;
-        static CAPTURE_LEFT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        if dbg.capture_file && n % 32 == 0 {
-            if let Ok(v) = std::fs::read_to_string("work/capture") {
-                let _ = std::fs::remove_file("work/capture");
-                CAPTURE_LEFT.store(v.trim().parse::<u32>().unwrap_or(1).max(1), Relaxed);
-            }
-        }
-        let capture = CAPTURE_LEFT.load(Relaxed) > 0;
-        if capture {
-            CAPTURE_LEFT.fetch_sub(1, Relaxed);
-            DUMP_NEXT.store(true, Relaxed);
-        }
-        TRACE_DRAWS.store(capture || dbg.trace_frame == Some(n) || at, Relaxed);
         for h in handles {
             if let Some(cmds) = cmd::recording(*h) {
                 r.run(&cmds, 0);
@@ -552,23 +502,6 @@ pub fn submit(handles: &[u64]) {
         }
         let cb = r.cb;
         cb.commit();
-        static DUMPED_AT: AtomicBool = AtomicBool::new(false);
-        let dump_at = dbg.dump_rt_at.is_some_and(|t| T0.elapsed().as_secs_f32() >= t) && !DUMPED_AT.swap(true, Relaxed);
-        if DUMP_NEXT.swap(false, Relaxed) || dump_at || dbg.dump_frames.contains(&n) {
-            cb.waitUntilCompleted();
-            let _ = std::fs::create_dir_all("work/frame");
-            for (i, (k, t)) in std::mem::take(&mut e.touched).into_iter().enumerate() {
-                let path = format!("work/frame/{n:04}_{i:03}_{:x}_f{}_{}x{}.png", k.addr, k.format, k.width, k.height);
-                gfx::dump_png(&t.0, &path);
-            }
-            let _ = std::fs::create_dir_all("work/frame/tex");
-            for (k, t) in std::mem::take(&mut e.sampled) {
-                gfx::dump_png(&t.0, &format!("work/frame/tex/{n:04}_{:x}_f{}_{}x{}.png", k.addr, k.format, k.width, k.height));
-            }
-            eprintln!("[gfx] frame {n} dumped to work/frame");
-        }
-        e.touched.clear();
-        e.sampled.clear();
         let cb = Shared(cb);
         e.arena.retire(cb.clone());
         e.overlays.clear();
@@ -643,7 +576,6 @@ pub fn present(texture: u64) {
             e.textures.get(&b, true)
         };
         if let Some((_, t)) = t {
-            dump_at(&t);
             crate::kernel::blocking(|| gfx::present(&t.0, !UPPER_LEFT.load(Relaxed)));
         }
     });
@@ -755,23 +687,6 @@ pub fn read_texels(mut b: TexBuilder, view: u64, region: [i32; 6], data: *mut u8
             }
         }
     });
-}
-
-fn dump_at(t: &Shared<gfx::Texture>) {
-    static TIMES: LazyLock<Mutex<Vec<f32>>> = LazyLock::new(|| {
-        let mut v: Vec<f32> = std::env::var("NX_DUMP_AT").unwrap_or_default().split(',').filter_map(|x| x.trim().parse().ok()).collect();
-        v.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        Mutex::new(v)
-    });
-    static START: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
-    let now = START.elapsed().as_secs_f32();
-    let mut times = TIMES.lock().unwrap();
-    if times.last().is_some_and(|&at| now >= at) {
-        let at = times.pop().unwrap();
-        let _ = std::fs::create_dir_all("work/frame");
-        gfx::dump_png(&t.0, &format!("work/frame/t{at:05.1}.png"));
-        eprintln!("[gfx] screen at {at}s dumped");
-    }
 }
 
 fn collect_updates(cmds: &[Cmd], depth: usize, out: &mut BTreeMap<u64, u64>) {
